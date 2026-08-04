@@ -1,0 +1,171 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: sih-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sih_auth  # Default DB, others created by init script
+    volumes:
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - sih-network
+
+  ml:
+    build:
+      context: ./ML
+      dockerfile: Dockerfile
+    container_name: sih-ml
+    ports:
+      - "8000:8000"
+    networks:
+      - sih-network
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: sih-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - sih-network
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  loki:
+    image: grafana/loki:latest
+    container_name: sih-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/observability/loki-config.yaml:/etc/loki/local-config.yaml
+    networks:
+      - sih-network
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: sih-promtail
+    volumes:
+      - ./docker/observability/promtail-config.yaml:/etc/promtail/config.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro # Might need adjustment on Mac
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sih-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sih-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/observability/prometheus-config.yaml:/etc/prometheus/prometheus.yml
+    networks:
+      - sih-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: sih-otel-collector
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8888:8888" # Prom exporter metrics
+      - "8889:8889" # Prometheus exporter
+    volumes:
+      - ./docker/observability/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    networks:
+      - sih-network
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: sih-tempo
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./docker/observability/tempo-config.yaml:/etc/tempo.yaml
+      - ./docker/observability/tempo-data:/tmp/tempo
+    ports:
+      - "14268:14268"  # jaeger ingest
+      - "3200:3200"    # tempo
+      - "4317"         # otlp grpc
+      - "4318"         # otlp http
+      - "9411:9411"    # zipkin
+    networks:
+      - sih-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sih-grafana
+    ports:
+      - "3001:3000"
+    networks:
+      - sih-network
+    volumes:
+      - ./docker/observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+
+  web:
+    build:
+      context: ./webdev
+      dockerfile: Dockerfile
+    container_name: sih-web
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./webdev/.env
+    environment:
+      - DATABASE_URL_AUTH=postgresql://postgres:password@db:5432/sih_auth
+      - DATABASE_URL_CITIZEN=postgresql://postgres:password@db:5432/sih_citizen
+      - DATABASE_URL_BUSINESS=postgresql://postgres:password@db:5432/sih_business
+      - DATABASE_URL_GOV=postgresql://postgres:password@db:5432/sih_gov
+      - ML_SERVICE_URL=http://ml:8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NEXT_PUBLIC_BASE_URL=http://localhost:3000
+      - BETTER_AUTH_SECRET=SnNbH5dl2O5mdVjHmAEEkrSzH1qilBK9
+      - BETTER_AUTH_URL=http://localhost:3000
+      - ML_DATA_PATH=/app/ml_data
+    volumes:
+      - "./ML/Data_SIH_2025_with_blh:/app/ml_data:ro"
+    depends_on:
+      - db
+      - ml
+      - redis
+    networks:
+      - sih-network
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    container_name: sih-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+    networks:
+      - sih-network
+    restart: always
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  sih-network:
+    driver: bridge
