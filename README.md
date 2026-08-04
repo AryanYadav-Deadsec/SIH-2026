@@ -1,4 +1,4 @@
-# Air Quality Forecasting System (SIH 2025)
+# Air Quality Forecasting System (SIH 2026 Internal)
 
 A comprehensive full-stack application designed to forecast and visualize air quality parameters (specifically O3 and NO2) using advanced machine learning models and satellite data integration.
 
